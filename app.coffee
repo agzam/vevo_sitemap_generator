@@ -1,47 +1,89 @@
-http = require "https"
+https = require "https"
+request = require "request"
+fs = require "fs"
 Q = require "q"
 _ = require "lodash"
 xmlBuilder = require "xmlbuilder"
 
+hostname = "stg-apiv2.vevo.com"
+apiToken = null
 
-getJsonPage = (page) ->
+###
+ * Gets api token, everytime new
+###
+getApiToken = ->
    dfrd = Q.defer()
 
-   options =
-      hostname: "stg-apiv2.vevo.com"
-      path: "/videos?page=#{page}&size=10&genre=&sort=MostViewedAllTime&token=_TMw_fGgJHvzr84MqwK1eWhBgbdebZhAm_y3W1ou-sU1.W_lW2AmcGNcfZlz4EsWeeWPIgFcjYTSgnIRkqmJNbl57hMKTYfvwzFYAjoahrfulhngROA2"
+   post_data = JSON.stringify
+      "client_id"      : "e962a4ae0b634065b774729ee601a82b"
+      "client_secret"  : "9794fb3bcd4b47488380c2bc9e5ef618"
+      "grant_type"     : "client_credentials"
+      "country"        : "US"
+      "locale"         : "en-us"
 
-   req = http.get options,(res)->
+   options =
+      url            : "https://#{hostname}/oauth/token"
+      body           : post_data
+      method         : "POST"
+      headers        : 'Content-Type': 'application/json'
+
+   request options, (err, response, body)->
+      if err then dfrd.reject()
+      else
+         apiToken = JSON.parse(body).access_token
+         dfrd.resolve()
+
+   dfrd.promise
+
+###
+ * Gets videos data from api
+###
+getJsonPage = (page) ->
+   dfrd = Q.defer()
+   options =
+      hostname: hostname
+      path: "/videos?page=#{page}&size=10&genre=&sort=MostViewedAllTime&token=#{apiToken}"
+
+   req = https.get options,(res)->
       body =""
       res.on 'data', (chunk)->
          body += chunk
+
       res.on "end", ->
          ob = JSON.parse body
          dfrd.resolve ob
 
       req.on "error", (e)->
+         console.log "error in request: #{e}"
          dfrd.reject e
 
    dfrd.promise
 
-
+###
+   Takes raw videos (parsed json array) and makes them easier to use for generating sitemap xml
+###
 prepareVideosForXml = (videos)->
    vids = []
    for video in videos
       artistSafeName = _.findWhere(video.artists, {"role":"Main"}).urlSafeName
       vids.push
          loc               :  "#{artistSafeName}/#{video.urlSafeName}/#{video.isrc}"
-         thumbnail_loc     :  video.thumbnailUrl
-         title             :  video.title
-         view_count        :  video.views.total
-         duration          :  video.duration
-         publication_date  :  video.releaseDate
+         thumbnail_loc     :  video.thumbnailUrl || ""
+         title             :  video.title || ""
+         view_count        :  video.views.total || ""
+         duration          :  video.duration || ""
+         publication_date  :  video.releaseDate || ""
          family_friendly   :  not video.isExplicit
          isrc              :  video.isrc
 
    vids
 
-generateXmlChunk = (videoInfo)->
+###
+   Makes a chunk of xml based on videos (previosly prepared collection)
+###
+generateXmlChunk = (videoInfo, xmlRoot)->
+   process.stdout.write " #{videoInfo.isrc}"
+
    chunk = xmlRoot.ele("url")
       .ele("loc").txt("http://www.vevo.com/watch/#{videoInfo.loc}").up()
       .ele("video:video")
@@ -60,20 +102,63 @@ generateXmlChunk = (videoInfo)->
 
    chunk
 
-xmlRoot = null
 
 main = (->
-   doc = xmlBuilder.create()
+   indexRoot = xmlBuilder.create().begin("sitemapindex").att("xmlns","http://www.sitemaps.org/schemas/sitemap/0.9")
+   ct =  # counters
+      jsPageNo       : 1
+      rowsInFile     : 0
+      sitemapIndex   : 0
 
-   xmlRoot = doc.begin("")
-#      doc.begin("urlset")
-#      .att("xmlns:video","http://www.google.com/schemas/sitemap-video/1.1")
-#      .att("xmlns","http://www.sitemaps.org/schemas/sitemap/0.9")
+   # function wraps while loop in a promise
+   promiseWhile = (condition, body)->
+      dfrd = Q.defer()
+      lp = ->
+         if !condition() then return dfrd.resolve()
 
-   getJsonPage(1).then (json)->
-      for vi in prepareVideosForXml(json.videos)
-         generateXmlChunk(vi)
+         Q.when body(), lp, dfrd.reject
 
-      console.log doc.toString {pretty:true}
+      Q.nextTick lp
+      dfrd.promise
+
+   # let's get an api token first and then proceed to everything else
+   Q.when getApiToken(), ->
+      siteMapRoot = null
+      promiseWhile(->
+         ct.jsPageNo isnt -1
+      ,->
+         console.log "getting page #{ct.jsPageNo}"
+         getJsonPage(ct.jsPageNo).then((json)->
+            if json.videos.length < 1 # no videos returned
+               console.log "no more videos"
+               ct.jsPageNo = -1
+               return
+
+            if ct.rowsInFile is 0 # starting new sitemapfile
+               console.log "creating new sitemap index"
+               indexRoot.ele("sitemap").ele("loc").txt("http://www.vevo.com/videos_sitemap_page_#{ct.sitemapIndex}.xml").up().up()
+               siteMapRoot = xmlBuilder.create().begin("urlset")
+                  .att("xmlns:video","http://www.google.com/schemas/sitemap-video/1.1")
+                  .att("xmlns","http://www.sitemaps.org/schemas/sitemap/0.9")
+
+            for vi in prepareVideosForXml(json.videos)
+               generateXmlChunk vi, siteMapRoot
+               ct.rowsInFile++
+
+               if ct.rowsInFile > 5000
+                  console.log "writing into #{ct.sitemapIndex}.xml"
+                  fs.writeFile "videos_sitemap_page_#{ct.sitemapIndex}.xml",siteMapRoot.toString({pretty : true}), (err)->
+                     console.log if err then err else "videos_sitemap_page_#{ct.sitemapIndex}.xml file was saved"
+                  ct.sitemapIndex++
+                  ct.rowsInFile = 0
+
+
+         ).then(->
+            ct.jsPageNo++
+         )
+      ).then ->
+         fs.writeFile "videos_sitemap_index.xml",indexRoot.toString({pretty : true}), (err)->
+            console.log if err then err else "videos_sitemap_index.xml file was saved"
+      .done()
 
 )()
