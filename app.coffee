@@ -15,8 +15,8 @@ getApiToken = ->
    dfrd = Q.defer()
 
    post_data = JSON.stringify
-      "client_id"      : "e962a4ae0b634065b774729ee601a82b"
-      "client_secret"  : "9794fb3bcd4b47488380c2bc9e5ef618"
+      "client_id"      : ""
+      "client_secret"  : ""
       "grant_type"     : "client_credentials"
       "country"        : "US"
       "locale"         : "en-us"
@@ -128,9 +128,6 @@ generateVideosXmlChunk = (videoInfo, xmlWriter)->
 generateArtistsXmlChunk = (artistInfo, xmlWriter)->
    xmlWriter.startElement("url")
       .startElement("loc").text("http://www.vevo.com/artist/#{artistInfo.urlSafeName}").endElement()
-      .startElement("artist")
-         .startElement("thumbnail_loc").text(artistInfo.thumbnailUrl.toString()).endElement()
-      .endElement()
    .endElement()
 
 

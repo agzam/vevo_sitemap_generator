@@ -160,7 +160,7 @@
   };
 
   generateArtistsXmlChunk = function(artistInfo, xmlWriter) {
-    return xmlWriter.startElement("url").startElement("loc").text("http://www.vevo.com/artist/" + artistInfo.urlSafeName).endElement().startElement("artist").startElement("thumbnail_loc").text(artistInfo.thumbnailUrl.toString()).endElement().endElement().endElement();
+    return xmlWriter.startElement("url").startElement("loc").text("http://www.vevo.com/artist/" + artistInfo.urlSafeName).endElement().endElement();
   };
 
   createNewVideosSitemap = function(index, indexMapWriter) {
